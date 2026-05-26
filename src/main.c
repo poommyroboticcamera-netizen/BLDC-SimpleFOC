@@ -146,8 +146,6 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
 
-  // สมมติว่า ARR คือ 8399
-  // ตั้ง Duty Cycle ไว้ที่ 10% เพื่อทดสอบสัญญาณ (10% ของ 8400 คือ 840)
   uint16_t motor_speed = 840;
   uint8_t current_step = 1;
 
@@ -168,11 +166,11 @@ int main(void)
         current_step = 1;
     }
 
-    // หน่วงเวลา 10ms สำหรับสโคปเช็คสัญญาณ หรือให้มอเตอร์ขยับสเต็ป
+    
     HAL_Delay(10);
 
   }
   /* USER CODE END 3 */
 }
 
-/* (โค้ดส่วนล่างๆ ที่เป็น SystemClock_Config และ MX_TIM1_Init ปล่อยไว้ตามเดิมได้เลยครับ) */
+

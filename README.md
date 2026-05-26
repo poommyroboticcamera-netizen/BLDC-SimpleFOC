@@ -38,6 +38,7 @@ Firmware prototype for driving a BLDC motor with a 6-step commutation sequence o
 │   │   └── main.c    # BLDC 6-step commutation firmware
 │   ├── test/         # PlatformIO test folder
 │   └── platformio.ini
+├── hardware/         # Schematics, PCB, simulation, and BOM files
 └── README.md
 ```
 

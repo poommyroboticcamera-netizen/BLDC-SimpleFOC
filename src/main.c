@@ -1,7 +1,4 @@
-#include "main.h"
-
-extern TIM_HandleTypeDef htim1;
-
+/* USER CODE BEGIN 0 */
 // ---------------------------------------------------------
 // ฟังก์ชันปิดทุกเฟส (สั่งรันเสมอเพื่อความปลอดภัย)
 // ---------------------------------------------------------
@@ -17,7 +14,7 @@ void Stop_All_Phases(void) {
 }
 
 // ---------------------------------------------------------
-// ฟังก์ชัน 6-Step Commutation (อ้างอิงเฟส A, B, C ตามวงจร)
+
 // ---------------------------------------------------------
 void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
     Stop_All_Phases(); // ป้องกันไฟช็อตข้ามเฟสเสมอ
@@ -90,30 +87,4 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
     }
 }
-
-// ---------------------------------------------------------
-// ฟังก์ชัน Main
-// ---------------------------------------------------------
-int main(void) {
-    HAL_Init();
-    SystemClock_Config();
-    MX_GPIO_Init();
-    MX_TIM1_Init();
-
-    // สมมติว่า ARR คือ 8399 
-    // ตั้ง Duty Cycle ไว้ที่ 10% เพื่อทดสอบสัญญาณ (10% ของ 8400 คือ 840)
-    uint16_t motor_speed = 840; 
-    uint8_t current_step = 1;
-
-    while (1) {
-        Set_Commutation_Step(current_step, motor_speed);
-        
-        current_step++;
-        if (current_step > 6) {
-            current_step = 1;
-        }
-
-        // ความเร็วในการเปลี่ยน Step สำหรับสโคปเช็คสัญญาณ
-        HAL_Delay(10); 
-    }
-}
+/* USER CODE END 0 */

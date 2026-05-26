@@ -1,10 +1,9 @@
 #include "main.h"
 
-// กำหนดตัวแปร Timer 1 ที่ถูกตั้งค่ามาจากฟังก์ชัน MX_TIM1_Init()
 extern TIM_HandleTypeDef htim1;
 
 // ---------------------------------------------------------
-// ฟังก์ชันสำหรับปิดทุกเฟส (ใช้เพื่อความปลอดภัยตอนเริ่มหรือหยุดมอเตอร์)
+// ฟังก์ชันปิดทุกเฟส (สั่งรันเสมอเพื่อความปลอดภัย)
 // ---------------------------------------------------------
 void Stop_All_Phases(void) {
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
@@ -18,17 +17,14 @@ void Stop_All_Phases(void) {
 }
 
 // ---------------------------------------------------------
-// ฟังก์ชันสำหรับสลับเฟส 6 จังหวะตามตำแหน่งโรเตอร์
+// ฟังก์ชัน 6-Step Commutation (อ้างอิงเฟส A, B, C ตามวงจร)
 // ---------------------------------------------------------
 void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
-    // 1. ปิดทุกเฟสก่อนเสมอ เพื่อป้องกันการช็อตข้ามเฟสขณะสลับสถานะ
-    Stop_All_Phases();
+    Stop_All_Phases(); // ป้องกันไฟช็อตข้ามเฟสเสมอ
 
-    // 2. สลับการทำงานตาม Step 1 ถึง 6
-    // หลักการ: จ่าย PWM เพื่อดันกระแส, ดึง Low (Duty 0) ลงกราวด์, และ Stop เพื่อปล่อยลอย (ปิดสนิท) 
     switch (step) {
         case 1: 
-            // เฟส U: PWM, เฟส V: Low, เฟส W: ปิดสนิท(ลอย) [cite: 13]
+            // เฟส A: PWM, เฟส B: Low, เฟส C: ลอย
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed_pwm); 
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);         
             
@@ -39,7 +35,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 2: 
-            // เฟส U: PWM, เฟส V: ปิดสนิท(ลอย), เฟส W: Low [cite: 14]
+            // เฟส A: PWM, เฟส B: ลอย, เฟส C: Low
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed_pwm); 
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);         
             
@@ -50,7 +46,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 3: 
-            // เฟส U: ปิดสนิท(ลอย), เฟส V: PWM, เฟส W: Low [cite: 14]
+            // เฟส A: ลอย, เฟส B: PWM, เฟส C: Low
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed_pwm); 
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);         
             
@@ -61,7 +57,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 4: 
-            // เฟส U: Low, เฟส V: PWM, เฟส W: ปิดสนิท(ลอย) [cite: 15]
+            // เฟส A: Low, เฟส B: PWM, เฟส C: ลอย
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);         
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed_pwm); 
             
@@ -72,7 +68,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 5: 
-            // เฟส U: Low, เฟส V: ปิดสนิท(ลอย), เฟส W: PWM [cite: 15]
+            // เฟส A: Low, เฟส B: ลอย, เฟส C: PWM
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);         
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, speed_pwm); 
             
@@ -83,7 +79,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 6: 
-            // เฟส U: ปิดสนิท(ลอย), เฟส V: Low, เฟส W: PWM [cite: 16]
+            // เฟส A: ลอย, เฟส B: Low, เฟส C: PWM
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);         
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, speed_pwm); 
             
@@ -99,19 +95,17 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
 // ฟังก์ชัน Main
 // ---------------------------------------------------------
 int main(void) {
-    // โค้ดส่วนนี้มักจะถูกสร้างโดยอัตโนมัติจาก STM32CubeMX
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
     MX_TIM1_Init();
 
-    // สมมติว่า Counter Period (ARR) ของ Timer 1 คือ 3599
-    // กำหนด Duty Cycle เริ่มต้นเพื่อทดสอบสัญญาณ 
-    uint16_t motor_speed = 360; 
+    // สมมติว่า ARR คือ 8399 
+    // ตั้ง Duty Cycle ไว้ที่ 10% เพื่อทดสอบสัญญาณ (10% ของ 8400 คือ 840)
+    uint16_t motor_speed = 840; 
     uint8_t current_step = 1;
 
     while (1) {
-        // ทดสอบรันลูปสลับเฟส 1 ถึง 6 แบบ Open-loop
         Set_Commutation_Step(current_step, motor_speed);
         
         current_step++;
@@ -119,7 +113,7 @@ int main(void) {
             current_step = 1;
         }
 
-        // หน่วงเวลาเพื่อให้จับสัญญาณสโคปได้ หรือให้มอเตอร์ค่อยๆ สลับสเต็ป
+        // ความเร็วในการเปลี่ยน Step สำหรับสโคปเช็คสัญญาณ
         HAL_Delay(10); 
     }
 }

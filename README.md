@@ -31,12 +31,13 @@ Firmware prototype for driving a BLDC motor with a 6-step commutation sequence o
 
 ```text
 .
-├── include/          # Shared header files
-├── lib/              # Private project libraries
-├── src/
-│   └── main.c        # BLDC 6-step commutation firmware
-├── test/             # PlatformIO test folder
-├── platformio.ini    # PlatformIO environment
+├── firmware/         # PlatformIO firmware project
+│   ├── include/      # Shared header files
+│   ├── lib/          # Private project libraries
+│   ├── src/
+│   │   └── main.c    # BLDC 6-step commutation firmware
+│   ├── test/         # PlatformIO test folder
+│   └── platformio.ini
 └── README.md
 ```
 
@@ -48,7 +49,7 @@ Firmware prototype for driving a BLDC motor with a 6-step commutation sequence o
 
 ```bash
 git clone https://github.com/poommyroboticcamera-netizen/BLDC-SimpleFOC.git
-cd BLDC-SimpleFOC
+cd BLDC-SimpleFOC/firmware
 ```
 
 4. Build the firmware.

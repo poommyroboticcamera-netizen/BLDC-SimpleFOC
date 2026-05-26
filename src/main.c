@@ -48,14 +48,13 @@ void Stop_All_Phases(void) {
 }
 
 // ---------------------------------------------------------
-// ฟังก์ชัน 6-Step Commutation (อ้างอิงเฟส A, B, C ตามวงจร)
+
 // ---------------------------------------------------------
 void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
-    Stop_All_Phases(); // ป้องกันไฟช็อตข้ามเฟสเสมอ
-
+    Stop_All_Phases(); 
     switch (step) {
         case 1:
-            // เฟส A: PWM, เฟส B: Low, เฟส C: ลอย
+           
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed_pwm);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
 
@@ -66,7 +65,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 2:
-            // เฟส A: PWM, เฟส B: ลอย, เฟส C: Low
+           
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, speed_pwm);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
@@ -77,7 +76,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 3:
-            // เฟส A: ลอย, เฟส B: PWM, เฟส C: Low
+            
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed_pwm);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
@@ -88,7 +87,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 4:
-            // เฟส A: Low, เฟส B: PWM, เฟส C: ลอย
+            
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, speed_pwm);
 
@@ -99,7 +98,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 5:
-            // เฟส A: Low, เฟส B: ลอย, เฟส C: PWM
+            
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, speed_pwm);
 
@@ -110,7 +109,7 @@ void Set_Commutation_Step(uint8_t step, uint16_t speed_pwm) {
             break;
 
         case 6:
-            // เฟส A: ลอย, เฟส B: Low, เฟส C: PWM
+            
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, speed_pwm);
 

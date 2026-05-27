@@ -73,32 +73,50 @@ If your gate driver has an enable pin, define `PIN_DRIVER_ENABLE` in `firmware/p
 
 ## Quick Start
 
-Install PlatformIO, then build from the firmware folder:
+Install VS Code and the PlatformIO extension first. Then clone the project and open the firmware workspace:
 
 ```bash
-cd firmware
+git clone https://github.com/poommyroboticcamera-netizen/BLDC-SimpleFOC.git
+cd BLDC-SimpleFOC/firmware
+```
+
+Check the motor and power settings before building:
+
+```ini
+-D MOTOR_POLE_PAIRS=7
+-D SUPPLY_VOLTAGE=12.0f
+-D VOLTAGE_LIMIT=2.0f
+-D VELOCITY_LIMIT=20.0f
+```
+
+Build the firmware:
+
+```bash
 pio run
 ```
 
-Upload to the STM32 board:
+Connect the STM32 programmer or USB bootloader, then upload:
 
 ```bash
 pio run --target upload
 ```
 
-Open the serial monitor:
+Open the serial monitor at `115200` baud:
 
 ```bash
 pio device monitor -b 115200
 ```
 
-Set target velocity with SimpleFOC Commander:
+Send SimpleFOC Commander velocity commands:
 
 ```text
-T0
-T2.5
-T-2.5
+T0      # stop
+T1      # slow forward
+T2.5    # faster forward
+T-1     # slow reverse
 ```
+
+Start with `T0`, verify the driver is quiet and stable, then increase the target slowly.
 
 ## Bring-Up Flow
 

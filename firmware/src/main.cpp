@@ -1,113 +1,189 @@
 #include <Arduino.h>
-#include <SimpleFOC.h>
+#include <STM32FreeRTOS.h>
+#include <math.h>
 
-// STM32 TIM1 hardware 6-PWM pins. Change these if your board wiring is different.
-#ifndef PIN_PHASE_UH
-#define PIN_PHASE_UH PA8
-#endif
+// ---------------------------------------------------------
+// 1. การตั้งค่าพินฮาร์ดแวร์ (Custom MKS 75100 + EG3112)
+// ---------------------------------------------------------
+// ขาอ่านแรงดันเฟส (ADC Phase Voltage Sensing)
+#define PA_V_PIN PA0 
+#define PB_V_PIN PA1
+#define PC_V_PIN PA2
 
-#ifndef PIN_PHASE_UL
-#define PIN_PHASE_UL PB13
-#endif
+// พารามิเตอร์ฮาร์ดแวร์ระดับล่าง
+#define HW_DEAD_TIME_NSEC   360.0f  // เวลา Dead-time 360 ns
+#define PWM_FREQ_HZ         20000   // ความถี่ PWM 20 kHz
 
-#ifndef PIN_PHASE_VH
-#define PIN_PHASE_VH PA9
-#endif
+const float PI_3 = 3.14159265359f;
+uint32_t timer_top; 
 
-#ifndef PIN_PHASE_VL
-#define PIN_PHASE_VL PB14
-#endif
+// ---------------------------------------------------------
+// 2. ตัวแปรควบคุมมอเตอร์ (ปรับเปลี่ยนผ่าน Serial ได้)
+// ---------------------------------------------------------
+float electrical_angle = 0.0f;
+float rotation_speed = 1.0f;      // ความเร็วสนามแม่เหล็กเริ่มต้น (องศา/ลูป)
+float duty_percent = 5.0f;        // ความแรงเริ่มต้นที่ 5% (เพื่อความปลอดภัย)
 
-#ifndef PIN_PHASE_WH
-#define PIN_PHASE_WH PA10
-#endif
+// ค่าตัวต้านทาน Voltage Divider บนบอร์ด
+const float R1_PHASE = 39000.0f; 
+const float R2_PHASE = 2200.0f;
 
-#ifndef PIN_PHASE_WL
-#define PIN_PHASE_WL PB15
-#endif
+// ---------------------------------------------------------
+// 3. ฟังก์ชันตั้งค่าฮาร์ดแวร์ TIM1 (STM32F4 Bare-metal)
+// ---------------------------------------------------------
+void init_vesc_hardware() {
+  // เปิด Clock ให้พอร์ต A, B และ TIM1
+  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN;
+  RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
 
-// Set this to the gate-driver enable pin if your power stage needs one.
-#ifndef PIN_DRIVER_ENABLE
-#define PIN_DRIVER_ENABLE NOT_SET
-#endif
+  // เซ็ตขา PA8, PA9, PA10 ให้เป็น Alternate Function 1 (TIM1_CH1..3 High-side)
+  GPIOA->MODER |= GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1 | GPIO_MODER_MODER10_1;
+  GPIOA->AFR[1] |= (1 << 0) | (1 << 4) | (1 << 8); 
+  
+  // เซ็ตขา PB13, PB14, PB15 ให้เป็น Alternate Function 1 (TIM1_CH1N..3N Low-side)
+  GPIOB->MODER |= GPIO_MODER_MODER13_1 | GPIO_MODER_MODER14_1 | GPIO_MODER_MODER15_1;
+  GPIOB->AFR[1] |= (1 << 20) | (1 << 24) | (1 << 28); 
 
-#ifndef MOTOR_POLE_PAIRS
-#define MOTOR_POLE_PAIRS 7
-#endif
+  // ตั้งค่า TIM1 แบบ Center-aligned
+  timer_top = SystemCoreClock / (PWM_FREQ_HZ * 2); 
+  TIM1->CR1 = 0;
+  TIM1->ARR = timer_top; 
+  TIM1->PSC = 0;         
+  TIM1->CR1 |= TIM_CR1_CMS_0 | TIM_CR1_CMS_1; 
 
-#ifndef SUPPLY_VOLTAGE
-#define SUPPLY_VOLTAGE 12.0f
-#endif
+  // ตั้งโหมด PWM1 
+  TIM1->CCMR1 = TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1PE |
+                TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2PE;
+  TIM1->CCMR2 = TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3PE;
 
-#ifndef VOLTAGE_LIMIT
-#define VOLTAGE_LIMIT 2.0f
-#endif
+  // เปิดใช้งาน Complementary outputs (สลับบน-ล่าง)
+  TIM1->CCER = TIM_CCER_CC1E | TIM_CCER_CC1NE |
+               TIM_CCER_CC2E | TIM_CCER_CC2NE |
+               TIM_CCER_CC3E | TIM_CCER_CC3NE;
 
-#ifndef VELOCITY_LIMIT
-#define VELOCITY_LIMIT 20.0f
-#endif
+  // แทรก Dead-time ลงระดับฮาร์ดแวร์
+  uint32_t dt_ticks = (uint32_t)((HW_DEAD_TIME_NSEC * SystemCoreClock) / 1000000000.0f);
+  if (dt_ticks > 127) dt_ticks = 127; 
+  TIM1->BDTR = TIM_BDTR_MOE | (dt_ticks & TIM_BDTR_DTG);
 
-#ifndef START_TARGET_VELOCITY
-#define START_TARGET_VELOCITY 2.0f
-#endif
-
-BLDCMotor motor = BLDCMotor(MOTOR_POLE_PAIRS);
-BLDCDriver6PWM driver = BLDCDriver6PWM(
-    PIN_PHASE_UH, PIN_PHASE_UL,
-    PIN_PHASE_VH, PIN_PHASE_VL,
-    PIN_PHASE_WH, PIN_PHASE_WL,
-    PIN_DRIVER_ENABLE, PIN_DRIVER_ENABLE, PIN_DRIVER_ENABLE);
-
-Commander commander = Commander(Serial);
-float target_velocity = START_TARGET_VELOCITY;
-
-void onTargetVelocity(char *cmd)
-{
-    commander.scalar(&target_velocity, cmd);
+  // เริ่มรัน Timer
+  TIM1->CR1 |= TIM_CR1_CEN;
 }
 
-void printConfig()
-{
-    Serial.println();
-    Serial.println(F("BLDC SimpleFOC open-loop velocity controller"));
-    Serial.print(F("Pole pairs: "));
-    Serial.println(MOTOR_POLE_PAIRS);
-    Serial.print(F("Supply voltage: "));
-    Serial.println(SUPPLY_VOLTAGE);
-    Serial.print(F("Voltage limit: "));
-    Serial.println(VOLTAGE_LIMIT);
-    Serial.print(F("Velocity limit: "));
-    Serial.println(VELOCITY_LIMIT);
-    Serial.println(F("Command: T<rad/s>, for example T3.5 or T0"));
-    Serial.println();
+// ---------------------------------------------------------
+// 4. FreeRTOS Tasks
+// ---------------------------------------------------------
+
+// Task 1: อัปเดตลูป 6-PWM แบบ Open-loop (ทำงานแม่นยำทุก 1ms)
+void TaskMotorControl(void *pvParameters) {
+  (void) pvParameters;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(1); 
+
+  for (;;) {
+    electrical_angle += rotation_speed;
+    if (electrical_angle >= 360.0f) electrical_angle -= 360.0f;
+
+    // แปลง Duty 0-100% ให้เป็นสเกล Amplitude (0.0 ถึง 0.5) ของคลื่น AC
+    float amplitude = (duty_percent / 100.0f) / 2.0f;
+    if (amplitude > 0.5f) amplitude = 0.5f; 
+
+    // คำนวณเฟส
+    float radA = electrical_angle * (PI_3 / 180.0f);
+    float radB = (electrical_angle + 120.0f) * (PI_3 / 180.0f);
+    float radC = (electrical_angle + 240.0f) * (PI_3 / 180.0f);
+
+    // เลื่อนศูนย์กลางคลื่นไปที่ 0.5 (ทำงานแบบ Symmetrical)
+    float valA = 0.5f + (amplitude * sin(radA));
+    float valB = 0.5f + (amplitude * sin(radB));
+    float valC = 0.5f + (amplitude * sin(radC));
+
+    // อัปเดต Register โดยตรง
+    TIM1->CCR1 = (uint32_t)(valA * timer_top);
+    TIM1->CCR2 = (uint32_t)(valB * timer_top);
+    TIM1->CCR3 = (uint32_t)(valC * timer_top);
+
+    vTaskDelayUntil(&xLastWakeTime, xFrequency); 
+  }
 }
 
-void setup()
-{
-    Serial.begin(115200);
-    delay(1000);
+// Task 2: รับคำสั่ง Serial และอ่านแรงดันเฟส ADC (ทำงานทุก 200ms)
+void TaskMonitor(void *pvParameters) {
+  (void) pvParameters;
+  analogReadResolution(12); // ตั้ง ADC เป็น 12-bit (0-4095)
 
-    SimpleFOCDebug::enable(&Serial);
-    printConfig();
+  for (;;) {
+    // --- รับคำสั่งปรับ Duty (พิมพ์ D) หรือ Speed (พิมพ์ S) ---
+    if (Serial.available() > 0) {
+      char command = Serial.read(); 
+      float value = Serial.parseFloat(); 
 
-    driver.voltage_power_supply = SUPPLY_VOLTAGE;
-    driver.voltage_limit = VOLTAGE_LIMIT;
-    driver.init();
+      if (command == 'D' || command == 'd') {
+        if (value >= 0.0f && value <= 100.0f) {
+          duty_percent = value;
+          Serial.print("\n>>> DUTY CYCLE SET TO: ");
+          Serial.print(duty_percent);
+          Serial.println("% <<<\n");
+        }
+      } 
+      else if (command == 'S' || command == 's') {
+        if (value >= 0.0f && value <= 20.0f) { 
+          rotation_speed = value;
+          Serial.print("\n>>> ROTATION SPEED SET TO: ");
+          Serial.print(rotation_speed);
+          Serial.println(" Deg/Loop <<<\n");
+        }
+      }
+    }
 
-    motor.linkDriver(&driver);
-    motor.controller = MotionControlType::velocity_openloop;
-    motor.voltage_limit = VOLTAGE_LIMIT;
-    motor.velocity_limit = VELOCITY_LIMIT;
-    motor.useMonitoring(Serial);
-    motor.init();
+    // --- อ่านและคำนวณแรงดันเฟส ---
+    int adc_pa = analogRead(PA_V_PIN);
+    int adc_pb = analogRead(PB_V_PIN);
+    int adc_pc = analogRead(PC_V_PIN);
 
-    commander.add('T', onTargetVelocity, "target velocity [rad/s]");
+    float ratio = (R1_PHASE + R2_PHASE) / R2_PHASE;
+    float v_pa = (adc_pa / 4095.0f) * 3.3f * ratio;
+    float v_pb = (adc_pb / 4095.0f) * 3.3f * ratio;
+    float v_pc = (adc_pc / 4095.0f) * 3.3f * ratio;
 
-    Serial.println(F("Motor ready."));
+    // พิมพ์ผลลัพธ์
+    Serial.print("Cmd Duty: "); Serial.print(duty_percent); 
+    Serial.print("% | Speed: "); Serial.print(rotation_speed); Serial.print(" | ");
+    Serial.print("VA: "); Serial.print(v_pa);
+    Serial.print("V | VB: "); Serial.print(v_pb);
+    Serial.print("V | VC: "); Serial.print(v_pc);
+    Serial.println("V");
+
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
 }
 
-void loop()
-{
-    motor.move(target_velocity);
-    commander.run();
+// ---------------------------------------------------------
+// 5. Main Setup
+// ---------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+  
+  // ตั้งค่าฮาร์ดแวร์ 
+  init_vesc_hardware();
+  
+  Serial.println("=========================================");
+  Serial.println("   Custom MKS 75100 V/f Control Ready    ");
+  Serial.println("=========================================");
+  Serial.println("Commands:");
+  Serial.println("  D<value> : Set Duty Cycle (0-100%) e.g. D10");
+  Serial.println("  S<value> : Set Speed (Deg/Loop)    e.g. S2.5");
+  Serial.println("-----------------------------------------");
+
+  // สร้าง Tasks ในระบบ FreeRTOS
+  xTaskCreate(TaskMotorControl, "MotorCtrl", 512, NULL, 2, NULL); // Priority สูงกว่า
+  xTaskCreate(TaskMonitor, "Monitor", 256, NULL, 1, NULL);        // Priority ต่ำกว่า
+
+  // สตาร์ทตัวจัดการ RTOS
+  vTaskStartScheduler();
 }
+
+void loop() {
+  // FreeRTOS จัดการให้หมดแล้ว
+}
+

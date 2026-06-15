@@ -1,46 +1,28 @@
+# Firmware Private Libraries
 
-This directory is intended for project specific (private) libraries.
-PlatformIO will compile them to static libraries and link into the executable file.
+This folder is reserved for project-specific PlatformIO libraries.
 
-The source code of each library should be placed in a separate directory
-("lib/your_library_name/[Code]").
+## Purpose
 
-For example, see the structure of the following example libraries `Foo` and `Bar`:
+Use `lib/` when a firmware module grows large enough to become its own reusable component. PlatformIO automatically builds libraries placed in this directory and links them into the firmware.
 
-|--lib
-|  |
-|  |--Bar
-|  |  |--docs
-|  |  |--examples
-|  |  |--src
-|  |     |- Bar.c
-|  |     |- Bar.h
-|  |  |- library.json (optional. for custom build options, etc) https://docs.platformio.org/page/librarymanager/config.html
-|  |
-|  |--Foo
-|  |  |- Foo.c
-|  |  |- Foo.h
-|  |
-|  |- README --> THIS FILE
-|
-|- platformio.ini
-|--src
-   |- main.c
+Possible future modules:
 
-Example contents of `src/main.c` using Foo and Bar:
-```
-#include <Foo.h>
-#include <Bar.h>
+- `MotorPwm/` for TIM1 setup and duty updates
+- `PhaseVoltage/` for ADC sampling and voltage conversion
+- `SerialCommands/` for command parsing
+- `GateDriver/` for enable, fault, and protection handling
+- `MotorSafety/` for current, voltage, and temperature limits
 
-int main (void)
-{
-  ...
-}
+## Example Structure
 
+```text
+lib/
+`-- MotorPwm/
+    |-- src/
+    |   |-- MotorPwm.cpp
+    |   `-- MotorPwm.h
+    `-- library.json
 ```
 
-The PlatformIO Library Dependency Finder will find automatically dependent
-libraries by scanning project source files.
-
-More information about PlatformIO Library Dependency Finder
-- https://docs.platformio.org/page/librarymanager/ldf.html
+The current project keeps all firmware logic in `src/main.cpp` while the hardware bring-up code is still small.

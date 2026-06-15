@@ -2,12 +2,13 @@
 
 # BLDC SimpleFOC
 
-STM32F405RG firmware template for a 3-phase BLDC inverter using PlatformIO, Arduino, and SimpleFOC.
+Custom STM32F405RG firmware and hardware reference files for a 3-phase BLDC inverter.
 
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-STM32-orange?style=for-the-badge)
-![SimpleFOC](https://img.shields.io/badge/SimpleFOC-2.4-19a974?style=for-the-badge)
+![Arduino](https://img.shields.io/badge/Framework-Arduino-00979d?style=for-the-badge)
+![FreeRTOS](https://img.shields.io/badge/RTOS-FreeRTOS-2f6f44?style=for-the-badge)
 ![MCU](https://img.shields.io/badge/MCU-STM32F405RG-1f6feb?style=for-the-badge)
-![Status](https://img.shields.io/badge/Status-Prototype-f4c430?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Hardware%20Bring--Up-f4c430?style=for-the-badge)
 
 </div>
 
@@ -15,78 +16,101 @@ STM32F405RG firmware template for a 3-phase BLDC inverter using PlatformIO, Ardu
 
 ## Overview
 
-`BLDC-SimpleFOC` is a clean starting template for bringing up a 6-PWM BLDC motor driver on STM32. It replaces the early STM32Cube skeleton with a buildable SimpleFOC firmware layout, conservative defaults, and serial tuning commands for bench testing.
+`BLDC-SimpleFOC` is a hardware bring-up project for a custom 3-phase BLDC motor driver based on an STM32F405RG. The current firmware drives TIM1 complementary PWM outputs directly, adds dead-time at the timer level, reads phase voltage feedback with ADC pins, and exposes simple serial commands for early bench testing.
 
-> This project is for controlled hardware bring-up. Start with a current-limited power supply, low voltage limits, and oscilloscope checks before connecting a motor.
+This repository is intended for controlled inverter testing, not finished production motor control. Start with a current-limited bench supply, low duty cycle, and oscilloscope verification before connecting a real motor load.
 
-## Feature Snapshot
+## What Is Included
 
-| Area | Included |
+| Area | Details |
 | --- | --- |
-| Motor control | SimpleFOC open-loop velocity control |
-| PWM topology | 6-PWM high/low gate-driver outputs |
-| Target board | `genericSTM32F405RG` |
-| Firmware stack | PlatformIO + Arduino + SimpleFOC |
-| Runtime tuning | Serial Commander target velocity command |
-| Safety defaults | Low voltage limit and explicit hardware checklist |
+| Firmware target | STM32F405RG using PlatformIO and Arduino |
+| Runtime model | STM32duino FreeRTOS tasks |
+| PWM output | TIM1 center-aligned 6-PWM complementary outputs |
+| Switching frequency | `20 kHz` |
+| Dead-time | `360 ns` configured in TIM1 BDTR |
+| Control mode | Open-loop sinusoidal V/f style test waveform |
+| Monitoring | Serial output plus phase voltage ADC reads |
+| Hardware files | Schematic PDF, 3D STEP model, and firmware flow diagram |
 
 ## Repository Layout
 
 ```text
 BLDC-SimpleFOC/
 |-- firmware/
-|   |-- include/
-|   |-- lib/
+|   |-- include/        Project headers, when shared declarations are added
+|   |-- lib/            Private PlatformIO libraries, when the firmware grows
 |   |-- src/
-|   |   `-- main.cpp
-|   |-- test/
-|   `-- platformio.ini
+|   |   `-- main.cpp    Main STM32 PWM, FreeRTOS, ADC, and serial logic
+|   |-- test/           PlatformIO unit/integration test area
+|   `-- platformio.ini  Board, framework, upload, monitor, and library config
 |-- hardware/
+|   |-- 3D_PCB_2026-06-15.step
+|   |-- SCH_BLDC Drive_2026-06-15.pdf
+|   |-- Custom FOC Firmware.drawio
+|   |-- Custom FOC Firmware.drawio.png
+|   |-- Custom FOC Firmware.drawio.svg
 |   `-- README.md
-|-- .vscode/
+|-- .gitattributes
 |-- .gitignore
 `-- README.md
 ```
 
-## Firmware Defaults
+## Hardware Pin Map
 
-| Setting | Default | Where to edit |
-| --- | ---: | --- |
-| Pole pairs | `7` | `firmware/platformio.ini` |
-| Supply voltage | `12.0 V` | `firmware/platformio.ini` |
-| Voltage limit | `2.0 V` | `firmware/platformio.ini` |
-| Velocity limit | `20.0 rad/s` | `firmware/platformio.ini` |
-| Start velocity | `2.0 rad/s` | `firmware/src/main.cpp` |
-| Serial baud | `115200` | `firmware/platformio.ini` |
+### PWM Outputs
 
-## Default Pin Map
+TIM1 is configured for complementary high-side and low-side PWM outputs.
 
-STM32 TIM1-compatible 6-PWM wiring:
+| Motor phase | High-side PWM | Low-side PWM | Timer channel |
+| --- | --- | --- | --- |
+| U | `PA8` | `PB13` | `TIM1_CH1 / TIM1_CH1N` |
+| V | `PA9` | `PB14` | `TIM1_CH2 / TIM1_CH2N` |
+| W | `PA10` | `PB15` | `TIM1_CH3 / TIM1_CH3N` |
 
-| Phase | High-side PWM | Low-side PWM |
+### Phase Voltage Feedback
+
+| Signal | MCU pin | Notes |
 | --- | --- | --- |
-| U | `PA8` | `PB13` |
-| V | `PA9` | `PB14` |
-| W | `PA10` | `PB15` |
+| Phase A voltage | `PA0` | 12-bit ADC read |
+| Phase B voltage | `PA1` | 12-bit ADC read |
+| Phase C voltage | `PA2` | 12-bit ADC read |
 
-If your gate driver has an enable pin, define `PIN_DRIVER_ENABLE` in `firmware/platformio.ini` or update `firmware/src/main.cpp`.
+The firmware currently assumes a phase voltage divider of:
+
+```cpp
+R1_PHASE = 39000.0f
+R2_PHASE = 2200.0f
+```
+
+Adjust these constants in `firmware/src/main.cpp` if the resistor values on the board change.
+
+## Firmware Behavior
+
+The firmware creates two FreeRTOS tasks:
+
+| Task | Period | Purpose |
+| --- | ---: | --- |
+| `TaskMotorControl` | `1 ms` | Updates the sinusoidal 3-phase PWM duty registers |
+| `TaskMonitor` | `200 ms` | Reads serial commands, samples phase voltage ADCs, and prints telemetry |
+
+Default runtime values:
+
+| Setting | Default |
+| --- | ---: |
+| PWM frequency | `20 kHz` |
+| Dead-time | `360 ns` |
+| Initial duty | `5%` |
+| Initial rotation speed | `1.0 deg/loop` |
+| Serial baud | `115200` |
 
 ## Quick Start
 
-Install VS Code and the PlatformIO extension first. Then clone the project and open the firmware workspace:
+Install VS Code with the PlatformIO extension, then clone and open the firmware project.
 
 ```bash
 git clone https://github.com/poommyroboticcamera-netizen/BLDC-SimpleFOC.git
 cd BLDC-SimpleFOC/firmware
-```
-
-Check the motor and power settings before building:
-
-```ini
--D MOTOR_POLE_PAIRS=7
--D SUPPLY_VOLTAGE=12.0f
--D VOLTAGE_LIMIT=2.0f
--D VELOCITY_LIMIT=20.0f
 ```
 
 Build the firmware:
@@ -95,58 +119,82 @@ Build the firmware:
 pio run
 ```
 
-Connect the STM32 programmer or USB bootloader, then upload:
+Upload with ST-Link:
 
 ```bash
 pio run --target upload
 ```
 
-Open the serial monitor at `115200` baud:
+Open the serial monitor:
 
 ```bash
 pio device monitor -b 115200
 ```
 
-Send SimpleFOC Commander velocity commands:
+## Serial Commands
+
+Commands are read from the serial monitor as one letter plus a numeric value.
+
+| Command | Range | Example | Meaning |
+| --- | --- | --- | --- |
+| `D<value>` | `0` to `100` | `D5` | Set PWM duty percentage |
+| `S<value>` | `0` to `20` | `S2.5` | Set electrical rotation speed in degrees per loop |
+
+Recommended first commands:
 
 ```text
-T0      # stop
-T1      # slow forward
-T2.5    # faster forward
-T-1     # slow reverse
+D0
+S1
+D2
+D5
 ```
 
-Start with `T0`, verify the driver is quiet and stable, then increase the target slowly.
+Increase duty slowly while watching the bench supply current and oscilloscope waveforms.
 
-## Bring-Up Flow
+## Bring-Up Checklist
 
-1. Confirm MCU pin mapping against your schematic.
-2. Power only the logic side and check firmware boot logs on serial.
-3. Scope all six PWM outputs without motor power.
-4. Enable the gate driver with a current-limited bench supply.
-5. Start with `T0`, then small commands such as `T1` or `T2`.
-6. Increase `VOLTAGE_LIMIT` only after phase order and switching behavior are verified.
+1. Confirm the schematic matches the PWM and ADC pin map above.
+2. Power only the logic side and verify the serial boot message.
+3. Scope `PA8`, `PA9`, `PA10`, `PB13`, `PB14`, and `PB15` before enabling motor power.
+4. Confirm complementary PWM timing and dead-time.
+5. Enable the gate driver with a current-limited supply.
+6. Start with `D0`, then raise duty in small steps.
+7. Verify phase order before connecting a mechanical load.
+8. Add current sensing, fault handling, and closed-loop feedback before high-power testing.
 
-## Safety Checklist
+## Hardware Documents
 
-- Use a current-limited power supply for first power-up.
-- Keep `VOLTAGE_LIMIT` low until the waveform and phase order are proven.
-- Confirm dead-time and gate-driver shoot-through protection.
-- Verify gate-driver enable polarity before enabling motor power.
-- Add fault input, current sensing, over-voltage, and emergency-stop logic before high-power testing.
-- Move to closed-loop FOC with a sensor before running under real load.
+The hardware folder contains the current reference files:
+
+| File | Purpose |
+| --- | --- |
+| [`SCH_BLDC Drive_2026-06-15.pdf`](hardware/SCH_BLDC%20Drive_2026-06-15.pdf) | Schematic export |
+| [`3D_PCB_2026-06-15.step`](hardware/3D_PCB_2026-06-15.step) | 3D PCB model for mechanical review |
+| [`Custom FOC Firmware.drawio.png`](hardware/Custom%20FOC%20Firmware.drawio.png) | Firmware flow diagram preview |
+| [`Custom FOC Firmware.drawio`](hardware/Custom%20FOC%20Firmware.drawio) | Editable draw.io diagram |
+
+![Firmware flow diagram](hardware/Custom%20FOC%20Firmware.drawio.png)
 
 ## Roadmap
 
-- [ ] Add board-specific schematic and pinout images
-- [ ] Add magnetic encoder or Hall sensor closed-loop mode
-- [ ] Add current-sense configuration
-- [ ] Add gate-driver fault and enable handling
-- [ ] Add automated PlatformIO CI build
-- [ ] Add hardware test notes and known-good motor settings
+- [ ] Clean up firmware comments and source encoding
+- [ ] Add gate-driver enable and fault input handling
+- [ ] Add current sensing and over-current protection
+- [ ] Add magnetic encoder or Hall sensor feedback
+- [ ] Add closed-loop FOC control after hardware validation
+- [ ] Add known-good motor settings and oscilloscope captures
+- [ ] Add PlatformIO CI build check
+
+## Safety Notes
+
+- Treat the inverter as high-energy hardware even at low voltage.
+- Use a current-limited bench supply during first tests.
+- Keep duty cycle low until all six PWM channels are verified.
+- Do not run high power without fault handling and current protection.
+- Disconnect motor power before changing wiring or probing low-side gate signals.
 
 ## Links
 
 - Repository: [poommyroboticcamera-netizen/BLDC-SimpleFOC](https://github.com/poommyroboticcamera-netizen/BLDC-SimpleFOC)
-- SimpleFOC documentation: [docs.simplefoc.com](https://docs.simplefoc.com/)
 - PlatformIO documentation: [docs.platformio.org](https://docs.platformio.org/)
+- STM32duino documentation: [github.com/stm32duino](https://github.com/stm32duino)

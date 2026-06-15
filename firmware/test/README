@@ -1,11 +1,24 @@
+# Firmware Tests
 
-This directory is intended for PlatformIO Test Runner and project tests.
+This folder is reserved for PlatformIO tests.
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+## Useful Test Targets
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+As the firmware becomes more modular, add tests for:
+
+- Serial command parsing
+- Duty-cycle clamping
+- Speed command limits
+- ADC voltage-divider conversion
+- PWM phase math
+- Gate-driver fault-state behavior
+
+## Running Tests
+
+From the `firmware/` directory:
+
+```bash
+pio test
+```
+
+For early hardware bring-up, most validation is still manual with a serial monitor, oscilloscope, and current-limited bench supply. Automated tests should be added when logic is moved out of `src/main.cpp` into smaller modules.

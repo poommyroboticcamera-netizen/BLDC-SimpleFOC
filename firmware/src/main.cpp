@@ -1,189 +1,276 @@
-#include <Arduino.h>
-#include <STM32FreeRTOS.h>
+// src/main.cpp
+#include "stm32f4xx_hal.h"
 #include <math.h>
+#include <stdbool.h>
 
-// ---------------------------------------------------------
-// 1. การตั้งค่าพินฮาร์ดแวร์ (Custom MKS 75100 + EG3112)
-// ---------------------------------------------------------
-// ขาอ่านแรงดันเฟส (ADC Phase Voltage Sensing)
-#define PA_V_PIN PA0 
-#define PB_V_PIN PA1
-#define PC_V_PIN PA2
+TIM_HandleTypeDef htim1;
 
-// พารามิเตอร์ฮาร์ดแวร์ระดับล่าง
-#define HW_DEAD_TIME_NSEC   360.0f  // เวลา Dead-time 360 ns
-#define PWM_FREQ_HZ         20000   // ความถี่ PWM 20 kHz
+// H2 mapping from your schematic:
+// H2-10 HIN_A -> PA8  TIM1_CH1
+// H2-9  LIN_A -> PB13 TIM1_CH1N
+// H2-8  HIN_B -> PA9  TIM1_CH2
+// H2-7  LIN_B -> PB14 TIM1_CH2N
+// H2-6  HIN_C -> PA10 TIM1_CH3
+// H2-5  LIN_C -> PB15 TIM1_CH3N
 
-const float PI_3 = 3.14159265359f;
-uint32_t timer_top; 
+#define RUN_SWITCH_ENABLED 1
+#define RUN_SWITCH_PORT GPIOC
+#define RUN_SWITCH_PIN GPIO_PIN_13
+#define RUN_SWITCH_ACTIVE GPIO_PIN_RESET
 
-// ---------------------------------------------------------
-// 2. ตัวแปรควบคุมมอเตอร์ (ปรับเปลี่ยนผ่าน Serial ได้)
-// ---------------------------------------------------------
-float electrical_angle = 0.0f;
-float rotation_speed = 1.0f;      // ความเร็วสนามแม่เหล็กเริ่มต้น (องศา/ลูป)
-float duty_percent = 5.0f;        // ความแรงเริ่มต้นที่ 5% (เพื่อความปลอดภัย)
+static constexpr uint32_t PWM_FREQ_HZ = 20000;
+static constexpr uint32_t TIM1_CLK_HZ = 168000000;
+static constexpr uint32_t PWM_PERIOD = (TIM1_CLK_HZ / (2 * PWM_FREQ_HZ)) - 1;
 
-// ค่าตัวต้านทาน Voltage Divider บนบอร์ด
-const float R1_PHASE = 39000.0f; 
-const float R2_PHASE = 2200.0f;
+// DTG 190 is about 1.5 us at TIM1 = 168 MHz. Verify on scope.
+static constexpr uint32_t DEADTIME_DTG = 190;
 
-// ---------------------------------------------------------
-// 3. ฟังก์ชันตั้งค่าฮาร์ดแวร์ TIM1 (STM32F4 Bare-metal)
-// ---------------------------------------------------------
-void init_vesc_hardware() {
-  // เปิด Clock ให้พอร์ต A, B และ TIM1
-  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN;
-  RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+static constexpr float TWO_PI = 6.28318530718f;
+static constexpr float PHASE_120 = 2.09439510239f;
 
-  // เซ็ตขา PA8, PA9, PA10 ให้เป็น Alternate Function 1 (TIM1_CH1..3 High-side)
-  GPIOA->MODER |= GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1 | GPIO_MODER_MODER10_1;
-  GPIOA->AFR[1] |= (1 << 0) | (1 << 4) | (1 << 8); 
-  
-  // เซ็ตขา PB13, PB14, PB15 ให้เป็น Alternate Function 1 (TIM1_CH1N..3N Low-side)
-  GPIOB->MODER |= GPIO_MODER_MODER13_1 | GPIO_MODER_MODER14_1 | GPIO_MODER_MODER15_1;
-  GPIOB->AFR[1] |= (1 << 20) | (1 << 24) | (1 << 28); 
+static constexpr float MIN_DUTY = 0.05f;
+static constexpr float MAX_DUTY = 0.95f;
+static constexpr float ALIGN_MODULATION = 0.035f;
+static constexpr float RUN_MODULATION = 0.060f;
 
-  // ตั้งค่า TIM1 แบบ Center-aligned
-  timer_top = SystemCoreClock / (PWM_FREQ_HZ * 2); 
-  TIM1->CR1 = 0;
-  TIM1->ARR = timer_top; 
-  TIM1->PSC = 0;         
-  TIM1->CR1 |= TIM_CR1_CMS_0 | TIM_CR1_CMS_1; 
+static constexpr uint32_t ALIGN_TIME_MS = 1200;
+static constexpr float START_ELECTRICAL_HZ = 0.8f;
+static constexpr float TARGET_ELECTRICAL_HZ = 8.0f;
+static constexpr float RAMP_HZ_PER_SEC = 0.8f;
 
-  // ตั้งโหมด PWM1 
-  TIM1->CCMR1 = TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1PE |
-                TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2PE;
-  TIM1->CCMR2 = TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3PE;
+static void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_TIM1_Init(void);
+extern "C" void Error_Handler(void);
 
-  // เปิดใช้งาน Complementary outputs (สลับบน-ล่าง)
-  TIM1->CCER = TIM_CCER_CC1E | TIM_CCER_CC1NE |
-               TIM_CCER_CC2E | TIM_CCER_CC2NE |
-               TIM_CCER_CC3E | TIM_CCER_CC3NE;
+static float clampf(float v, float lo, float hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
 
-  // แทรก Dead-time ลงระดับฮาร์ดแวร์
-  uint32_t dt_ticks = (uint32_t)((HW_DEAD_TIME_NSEC * SystemCoreClock) / 1000000000.0f);
-  if (dt_ticks > 127) dt_ticks = 127; 
-  TIM1->BDTR = TIM_BDTR_MOE | (dt_ticks & TIM_BDTR_DTG);
+static uint32_t dutyToCompare(float duty) {
+  duty = clampf(duty, MIN_DUTY, MAX_DUTY);
+  return (uint32_t)(duty * (float)(PWM_PERIOD + 1));
+}
 
-  // เริ่มรัน Timer
+static void setDuty(float a, float b, float c) {
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyToCompare(a));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyToCompare(b));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyToCompare(c));
+}
+
+static void setNeutralDuty(void) {
+  setDuty(0.5f, 0.5f, 0.5f);
+}
+
+static void setOpenLoopSine(float theta, float modulation) {
+  modulation = clampf(modulation, 0.0f, 0.12f);
+
+  float da = 0.5f + modulation * sinf(theta);
+  float db = 0.5f + modulation * sinf(theta - PHASE_120);
+  float dc = 0.5f + modulation * sinf(theta + PHASE_120);
+
+  setDuty(da, db, dc);
+}
+
+static bool runSwitchActive(void) {
+#if RUN_SWITCH_ENABLED
+  return HAL_GPIO_ReadPin(RUN_SWITCH_PORT, RUN_SWITCH_PIN) == RUN_SWITCH_ACTIVE;
+#else
+  return true;
+#endif
+}
+
+static void preparePwmOutputs(void) {
+  setNeutralDuty();
+  TIM1->EGR = TIM_EGR_UG;
+
+  TIM1->CCER |= TIM_CCER_CC1E | TIM_CCER_CC1NE |
+                TIM_CCER_CC2E | TIM_CCER_CC2NE |
+                TIM_CCER_CC3E | TIM_CCER_CC3NE;
+
   TIM1->CR1 |= TIM_CR1_CEN;
+  TIM1->BDTR &= ~TIM_BDTR_MOE;
 }
 
-// ---------------------------------------------------------
-// 4. FreeRTOS Tasks
-// ---------------------------------------------------------
-
-// Task 1: อัปเดตลูป 6-PWM แบบ Open-loop (ทำงานแม่นยำทุก 1ms)
-void TaskMotorControl(void *pvParameters) {
-  (void) pvParameters;
-  TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(1); 
-
-  for (;;) {
-    electrical_angle += rotation_speed;
-    if (electrical_angle >= 360.0f) electrical_angle -= 360.0f;
-
-    // แปลง Duty 0-100% ให้เป็นสเกล Amplitude (0.0 ถึง 0.5) ของคลื่น AC
-    float amplitude = (duty_percent / 100.0f) / 2.0f;
-    if (amplitude > 0.5f) amplitude = 0.5f; 
-
-    // คำนวณเฟส
-    float radA = electrical_angle * (PI_3 / 180.0f);
-    float radB = (electrical_angle + 120.0f) * (PI_3 / 180.0f);
-    float radC = (electrical_angle + 240.0f) * (PI_3 / 180.0f);
-
-    // เลื่อนศูนย์กลางคลื่นไปที่ 0.5 (ทำงานแบบ Symmetrical)
-    float valA = 0.5f + (amplitude * sin(radA));
-    float valB = 0.5f + (amplitude * sin(radB));
-    float valC = 0.5f + (amplitude * sin(radC));
-
-    // อัปเดต Register โดยตรง
-    TIM1->CCR1 = (uint32_t)(valA * timer_top);
-    TIM1->CCR2 = (uint32_t)(valB * timer_top);
-    TIM1->CCR3 = (uint32_t)(valC * timer_top);
-
-    vTaskDelayUntil(&xLastWakeTime, xFrequency); 
-  }
+static void bridgeArm(void) {
+  setNeutralDuty();
+  TIM1->EGR = TIM_EGR_UG;
+  TIM1->BDTR |= TIM_BDTR_MOE;
 }
 
-// Task 2: รับคำสั่ง Serial และอ่านแรงดันเฟส ADC (ทำงานทุก 200ms)
-void TaskMonitor(void *pvParameters) {
-  (void) pvParameters;
-  analogReadResolution(12); // ตั้ง ADC เป็น 12-bit (0-4095)
+static void bridgeDisarm(void) {
+  TIM1->BDTR &= ~TIM_BDTR_MOE;
+  setNeutralDuty();
+}
 
-  for (;;) {
-    // --- รับคำสั่งปรับ Duty (พิมพ์ D) หรือ Speed (พิมพ์ S) ---
-    if (Serial.available() > 0) {
-      char command = Serial.read(); 
-      float value = Serial.parseFloat(); 
+int main(void) {
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_TIM1_Init();
 
-      if (command == 'D' || command == 'd') {
-        if (value >= 0.0f && value <= 100.0f) {
-          duty_percent = value;
-          Serial.print("\n>>> DUTY CYCLE SET TO: ");
-          Serial.print(duty_percent);
-          Serial.println("% <<<\n");
-        }
-      } 
-      else if (command == 'S' || command == 's') {
-        if (value >= 0.0f && value <= 20.0f) { 
-          rotation_speed = value;
-          Serial.print("\n>>> ROTATION SPEED SET TO: ");
-          Serial.print(rotation_speed);
-          Serial.println(" Deg/Loop <<<\n");
-        }
-      }
+  preparePwmOutputs();
+  bridgeDisarm();
+
+  // Safety boot delay: gives 12V/5V/3.3V rails time to settle.
+  HAL_Delay(1500);
+
+  bridgeArm();
+
+  enum State { ALIGN, RUN };
+  State state = ALIGN;
+
+  float angle = 0.0f;
+  uint32_t stateStart = HAL_GetTick();
+  uint32_t lastTick = stateStart;
+
+  while (1) {
+    uint32_t now = HAL_GetTick();
+
+    if (now == lastTick) {
+      HAL_Delay(1);
+      continue;
     }
 
-    // --- อ่านและคำนวณแรงดันเฟส ---
-    int adc_pa = analogRead(PA_V_PIN);
-    int adc_pb = analogRead(PB_V_PIN);
-    int adc_pc = analogRead(PC_V_PIN);
+    float dt = (float)(now - lastTick) * 0.001f;
+    lastTick = now;
 
-    float ratio = (R1_PHASE + R2_PHASE) / R2_PHASE;
-    float v_pa = (adc_pa / 4095.0f) * 3.3f * ratio;
-    float v_pb = (adc_pb / 4095.0f) * 3.3f * ratio;
-    float v_pc = (adc_pc / 4095.0f) * 3.3f * ratio;
+    if (state == ALIGN) {
+      setOpenLoopSine(0.0f, ALIGN_MODULATION);
 
-    // พิมพ์ผลลัพธ์
-    Serial.print("Cmd Duty: "); Serial.print(duty_percent); 
-    Serial.print("% | Speed: "); Serial.print(rotation_speed); Serial.print(" | ");
-    Serial.print("VA: "); Serial.print(v_pa);
-    Serial.print("V | VB: "); Serial.print(v_pb);
-    Serial.print("V | VC: "); Serial.print(v_pc);
-    Serial.println("V");
+      if ((now - stateStart) >= ALIGN_TIME_MS) {
+        state = RUN;
+        stateStart = now;
+        lastTick = now;
+      }
+    } else {
+      float t = (float)(now - stateStart) * 0.001f;
+      float hz = START_ELECTRICAL_HZ + (RAMP_HZ_PER_SEC * t);
+      hz = clampf(hz, START_ELECTRICAL_HZ, TARGET_ELECTRICAL_HZ);
 
-    vTaskDelay(pdMS_TO_TICKS(200));
+      angle += TWO_PI * hz * dt;
+      while (angle >= TWO_PI) angle -= TWO_PI;
+
+      setOpenLoopSine(angle, RUN_MODULATION);
+    }
   }
 }
 
-// ---------------------------------------------------------
-// 5. Main Setup
-// ---------------------------------------------------------
-void setup() {
-  Serial.begin(115200);
-  
-  // ตั้งค่าฮาร์ดแวร์ 
-  init_vesc_hardware();
-  
-  Serial.println("=========================================");
-  Serial.println("   Custom MKS 75100 V/f Control Ready    ");
-  Serial.println("=========================================");
-  Serial.println("Commands:");
-  Serial.println("  D<value> : Set Duty Cycle (0-100%) e.g. D10");
-  Serial.println("  S<value> : Set Speed (Deg/Loop)    e.g. S2.5");
-  Serial.println("-----------------------------------------");
+static void MX_GPIO_Init(void) {
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  // สร้าง Tasks ในระบบ FreeRTOS
-  xTaskCreate(TaskMotorControl, "MotorCtrl", 512, NULL, 2, NULL); // Priority สูงกว่า
-  xTaskCreate(TaskMonitor, "Monitor", 256, NULL, 1, NULL);        // Priority ต่ำกว่า
+  GPIO_InitTypeDef gpio = {};
 
-  // สตาร์ทตัวจัดการ RTOS
-  vTaskStartScheduler();
+  gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_PULLDOWN;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  gpio.Alternate = GPIO_AF1_TIM1;
+  HAL_GPIO_Init(GPIOA, &gpio);
+
+  gpio.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_PULLDOWN;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  gpio.Alternate = GPIO_AF1_TIM1;
+  HAL_GPIO_Init(GPIOB, &gpio);
 }
 
-void loop() {
-  // FreeRTOS จัดการให้หมดแล้ว
+static void MX_TIM1_Init(void) {
+  __HAL_RCC_TIM1_CLK_ENABLE();
+
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
+  htim1.Init.Period = PWM_PERIOD;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK) Error_Handler();
+
+  TIM_OC_InitTypeDef oc = {};
+  oc.OCMode = TIM_OCMODE_PWM1;
+  oc.Pulse = (PWM_PERIOD + 1) / 2;
+  oc.OCPolarity = TIM_OCPOLARITY_HIGH;
+  oc.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  oc.OCFastMode = TIM_OCFAST_DISABLE;
+  oc.OCIdleState = TIM_OCIDLESTATE_RESET;
+  oc.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &oc, TIM_CHANNEL_1) != HAL_OK) Error_Handler();
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &oc, TIM_CHANNEL_2) != HAL_OK) Error_Handler();
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &oc, TIM_CHANNEL_3) != HAL_OK) Error_Handler();
+
+  TIM_BreakDeadTimeConfigTypeDef bd = {};
+  bd.OffStateRunMode = TIM_OSSR_DISABLE;
+  bd.OffStateIDLEMode = TIM_OSSI_ENABLE;
+  bd.LockLevel = TIM_LOCKLEVEL_OFF;
+  bd.DeadTime = DEADTIME_DTG;
+  bd.BreakState = TIM_BREAK_DISABLE;
+  bd.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  bd.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &bd) != HAL_OK) Error_Handler();
 }
 
+static void MX_GPIO_Init(void) {
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  GPIO_InitTypeDef gpio = {};
+
+  gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_PULLDOWN;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  gpio.Alternate = GPIO_AF1_TIM1;
+  HAL_GPIO_Init(GPIOA, &gpio);
+
+  gpio.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_PULLDOWN;
+  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  gpio.Alternate = GPIO_AF1_TIM1;
+  HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+static void SystemClock_Config(void) {
+  RCC_OscInitTypeDef osc = {};
+  RCC_ClkInitTypeDef clk = {};
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  osc.HSIState = RCC_HSI_ON;
+  osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  osc.PLL.PLLState = RCC_PLL_ON;
+  osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  osc.PLL.PLLM = 16;
+  osc.PLL.PLLN = 336;
+  osc.PLL.PLLP = RCC_PLLP_DIV2;
+  osc.PLL.PLLQ = 7;
+
+  if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
+
+  clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                  RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  clk.APB1CLKDivider = RCC_HCLK_DIV4;
+  clk.APB2CLKDivider = RCC_HCLK_DIV2;
+
+  if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5) != HAL_OK) Error_Handler();
+}
+
+extern "C" void Error_Handler(void) {
+  __disable_irq();
+  if ((RCC->APB2ENR & RCC_APB2ENR_TIM1EN) != 0U) {
+    TIM1->BDTR &= ~TIM_BDTR_MOE;
+  }
+  while (1) {}
+}

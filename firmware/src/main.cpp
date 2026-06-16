@@ -31,12 +31,12 @@ static constexpr float PHASE_120 = 2.09439510239f;
 static constexpr float MIN_DUTY = 0.05f;
 static constexpr float MAX_DUTY = 0.95f;
 static constexpr float ALIGN_MODULATION = 0.035f;
-static constexpr float RUN_MODULATION = 0.060f;
+static constexpr float RUN_MODULATION = 0.060f; /////////////////////////
 
 static constexpr uint32_t ALIGN_TIME_MS = 1200;
-static constexpr float START_ELECTRICAL_HZ = 0.8f;
-static constexpr float TARGET_ELECTRICAL_HZ = 8.0f;
-static constexpr float RAMP_HZ_PER_SEC = 0.8f;
+static constexpr float START_ELECTRICAL_HZ = 0.8f; /////////////
+static constexpr float TARGET_ELECTRICAL_HZ = 8.0f; ///////////////
+static constexpr float RAMP_HZ_PER_SEC = 0.8f;  //////////////
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);

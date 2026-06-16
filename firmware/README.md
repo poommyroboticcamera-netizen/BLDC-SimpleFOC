@@ -31,7 +31,7 @@ firmware/
 The current firmware is an open-loop hardware bring-up program:
 
 - Configures TIM1 for center-aligned complementary 6-PWM output.
-- Applies `360 ns` dead-time in the advanced timer.
+- Applies `1.5us` dead-time in the advanced timer.
 - Generates a 3-phase sinusoidal duty pattern.
 - Reads phase voltage feedback on `PA0`, `PA1`, and `PA2`.
 - Uses FreeRTOS to separate motor PWM updates from serial monitoring.

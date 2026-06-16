@@ -1,244 +1,221 @@
-// src/main.cpp
-#include "stm32f4xx_hal.h"
+#include <Arduino.h>
 #include <math.h>
-#include <stdbool.h>
 
-TIM_HandleTypeDef htim1;
+/* ================= CONFIG ================= */
+static const float BUS_VOLTAGE = 24.0f;
+static const uint32_t PWM_FREQ_HZ = 20000;
+static const uint32_t TIMER_CLOCK_HZ = 168000000;
 
-// H2 mapping from your schematic:
-// H2-10 HIN_A -> PA8  TIM1_CH1
-// H2-9  LIN_A -> PB13 TIM1_CH1N
-// H2-8  HIN_B -> PA9  TIM1_CH2
-// H2-7  LIN_B -> PB14 TIM1_CH2N
-// H2-6  HIN_C -> PA10 TIM1_CH3
-// H2-5  LIN_C -> PB15 TIM1_CH3N
+static const uint8_t pole_pairs = 6;
 
+/* motor control */
+static float targetMechanicalRpm = 440.0f;
+static float currentMechanicalRpm = 0.0f;
+static float rampRpmPerSecond = 120.0f;
 
-static constexpr uint32_t PWM_FREQ_HZ = 20000;
-static constexpr uint32_t TIM1_CLK_HZ = 168000000;
-static constexpr uint32_t PWM_PERIOD = (TIM1_CLK_HZ / (2 * PWM_FREQ_HZ)) - 1;
+static float electricalAngle = 0.0f;
+static float electricalRps = 0.0f;
 
-// DTG 190 is about 1.5 us at TIM1 = 168 MHz. Verify on scope.
-static constexpr uint32_t DEADTIME_DTG = 190;
+/* control */
+static float targetUqVolts = 4.2f;
+static float startBoost = 4.8f;
 
-static constexpr float TWO_PI = 6.28318530718f;
-static constexpr float PHASE_120 = 2.09439510239f;
+/* TIM */
+static uint16_t tim1Arr = 0;
 
-static constexpr float MIN_DUTY = 0.05f;
-static constexpr float MAX_DUTY = 0.95f;
-static constexpr float ALIGN_MODULATION = 0.035f;
-static constexpr float RUN_MODULATION = 0.060f; /////////////////////////
-
-static constexpr uint32_t ALIGN_TIME_MS = 1200;
-static constexpr float START_ELECTRICAL_HZ = 0.8f; /////////////
-static constexpr float TARGET_ELECTRICAL_HZ = 8.0f; ///////////////
-static constexpr float RAMP_HZ_PER_SEC = 0.8f;  //////////////
-
-static void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_TIM1_Init(void);
-extern "C" void Error_Handler(void);
-
-static float clampf(float v, float lo, float hi) {
-  if (v < lo) return lo;
-  if (v > hi) return hi;
-  return v;
+/* ================= UTILS ================= */
+static float clampf(float x, float a, float b)
+{
+    if (x < a) return a;
+    if (x > b) return b;
+    return x;
 }
 
-static uint32_t dutyToCompare(float duty) {
-  duty = clampf(duty, MIN_DUTY, MAX_DUTY);
-  return (uint32_t)(duty * (float)(PWM_PERIOD + 1));
+/* ================= DEADTIME ================= */
+static uint8_t deadtimeTicksFromUs(float us)
+{
+    uint32_t ticks = (uint32_t)(us * TIMER_CLOCK_HZ / 1e6f);
+
+    if (ticks <= 127) return (uint8_t)ticks;
+
+    ticks >>= 1;
+    if (ticks > 63) ticks = 63;
+
+    return (uint8_t)(0x80 | ticks);
 }
 
-static void setDuty(float a, float b, float c) {
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyToCompare(a));
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyToCompare(b));
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyToCompare(c));
+/* ================= GPIO + TIM1 ================= */
+static void setupPWM()
+{
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN;
+    RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+
+    /* PA8 PA9 PA10 = TIM1_CH1 CH2 CH3 */
+    GPIOA->MODER &= ~((3 << (8 * 2)) | (3 << (9 * 2)) | (3 << (10 * 2)));
+    GPIOA->MODER |=  ((2 << (8 * 2)) | (2 << (9 * 2)) | (2 << (10 * 2)));
+
+    /* PB13 PB14 PB15 = TIM1_CH1N CH2N CH3N */
+    GPIOB->MODER &= ~((3 << (13 * 2)) | (3 << (14 * 2)) | (3 << (15 * 2)));
+    GPIOB->MODER |=  ((2 << (13 * 2)) | (2 << (14 * 2)) | (2 << (15 * 2)));
+
+    /* AF1 = TIM1 */
+    GPIOA->AFR[1] &= ~((0xF << 0) | (0xF << 4) | (0xF << 8));
+    GPIOA->AFR[1] |=  ((1 << 0) | (1 << 4) | (1 << 8));
+
+    GPIOB->AFR[1] &= ~((0xF << 20) | (0xF << 24) | (0xF << 28));
+    GPIOB->AFR[1] |=  ((1 << 20) | (1 << 24) | (1 << 28));
+
+    /* TIM1 base */
+    TIM1->CR1 = 0;
+    TIM1->PSC = 0;
+
+    tim1Arr = (uint16_t)((TIMER_CLOCK_HZ / (2 * PWM_FREQ_HZ)) - 1);
+    TIM1->ARR = tim1Arr;
+
+    /* PWM mode 1 on CH1 CH2 CH3 */
+    TIM1->CCMR1 =
+        TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 |
+        TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2;
+
+    TIM1->CCMR2 =
+        TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2;
+
+    /* Enable high-side and low-side outputs */
+    TIM1->CCER =
+        TIM_CCER_CC1E | TIM_CCER_CC1NE |
+        TIM_CCER_CC2E | TIM_CCER_CC2NE |
+        TIM_CCER_CC3E | TIM_CCER_CC3NE;
+
+    /* Deadtime + main output enable */
+    uint8_t dt = deadtimeTicksFromUs(1.0f);
+
+    TIM1->BDTR =
+        TIM_BDTR_MOE |
+        TIM_BDTR_OSSR |
+        TIM_BDTR_OSSI |
+        dt;
+
+    /* Center-aligned mode + preload */
+    TIM1->CR1 = TIM_CR1_CMS_0 | TIM_CR1_ARPE;
+
+    TIM1->EGR = TIM_EGR_UG;
+
+    TIM1->CCR1 = tim1Arr / 2;
+    TIM1->CCR2 = tim1Arr / 2;
+    TIM1->CCR3 = tim1Arr / 2;
+
+    TIM1->CR1 |= TIM_CR1_CEN;
 }
 
-static void setNeutralDuty(void) {
-  setDuty(0.5f, 0.5f, 0.5f);
+/* ================= PWM WRITE ================= */
+static void writeDuty(float da, float db, float dc)
+{
+    da = clampf(da, 0.02f, 0.98f);
+    db = clampf(db, 0.02f, 0.98f);
+    dc = clampf(dc, 0.02f, 0.98f);
+
+    uint16_t top = tim1Arr + 1;
+
+    TIM1->CCR1 = (uint16_t)(da * top);
+    TIM1->CCR2 = (uint16_t)(db * top);
+    TIM1->CCR3 = (uint16_t)(dc * top);
 }
 
-static void setOpenLoopSine(float theta, float modulation) {
-  modulation = clampf(modulation, 0.0f, 0.12f);
+/* ================= SVPWM ================= */
+static void setSVPWM(float alpha, float beta)
+{
+    float v1 = beta;
+    float v2 = -0.5f * beta + 0.8660254f * alpha;
+    float v3 = -0.5f * beta - 0.8660254f * alpha;
 
-  float da = 0.5f + modulation * sinf(theta);
-  float db = 0.5f + modulation * sinf(theta - PHASE_120);
-  float dc = 0.5f + modulation * sinf(theta + PHASE_120);
+    float vmax = fmaxf(v1, fmaxf(v2, v3));
+    float vmin = fminf(v1, fminf(v2, v3));
 
-  setDuty(da, db, dc);
+    float offset = 0.5f * (vmax + vmin);
+
+    v1 -= offset;
+    v2 -= offset;
+    v3 -= offset;
+
+    float da = 0.5f + (v1 / BUS_VOLTAGE);
+    float db = 0.5f + (v2 / BUS_VOLTAGE);
+    float dc = 0.5f + (v3 / BUS_VOLTAGE);
+
+    writeDuty(da, db, dc);
 }
 
-static void preparePwmOutputs(void) {
-  setNeutralDuty();
-  TIM1->EGR = TIM_EGR_UG;
+/* ================= OPEN LOOP FOC ================= */
+static void openLoopFOC(float theta, float uq)
+{
+    float alpha = -uq * sinf(theta);
+    float beta  =  uq * cosf(theta);
 
-  TIM1->CCER |= TIM_CCER_CC1E | TIM_CCER_CC1NE |
-                TIM_CCER_CC2E | TIM_CCER_CC2NE |
-                TIM_CCER_CC3E | TIM_CCER_CC3NE;
-
-  TIM1->CR1 |= TIM_CR1_CEN;
-  TIM1->BDTR &= ~TIM_BDTR_MOE;
+    setSVPWM(alpha, beta);
 }
 
-static void bridgeArm(void) {
-  setNeutralDuty();
-  TIM1->EGR = TIM_EGR_UG;
-  TIM1->BDTR |= TIM_BDTR_MOE;
-}
+/* ================= RAMP ================= */
+static void updateRamp(float dt)
+{
+    float step = rampRpmPerSecond * dt;
 
-static void bridgeDisarm(void) {
-  TIM1->BDTR &= ~TIM_BDTR_MOE;
-  setNeutralDuty();
-}
-
-int main(void) {
-  HAL_Init();
-  SystemClock_Config();
-  MX_GPIO_Init();
-  MX_TIM1_Init();
-
-  preparePwmOutputs();
-  bridgeDisarm();
-
-  // Safety boot delay: gives 12V/5V/3.3V rails time to settle.
-  HAL_Delay(1500);
-
-  bridgeArm();
-
-  enum State { ALIGN, RUN };
-  State state = ALIGN;
-
-  float angle = 0.0f;
-  uint32_t stateStart = HAL_GetTick();
-  uint32_t lastTick = stateStart;
-
-  while (1) {
-    uint32_t now = HAL_GetTick();
-
-    if (now == lastTick) {
-      HAL_Delay(1);
-      continue;
+    if (currentMechanicalRpm < targetMechanicalRpm)
+    {
+        currentMechanicalRpm += step;
+        if (currentMechanicalRpm > targetMechanicalRpm)
+            currentMechanicalRpm = targetMechanicalRpm;
+    }
+    else
+    {
+        currentMechanicalRpm -= step;
+        if (currentMechanicalRpm < targetMechanicalRpm)
+            currentMechanicalRpm = targetMechanicalRpm;
     }
 
-    float dt = (float)(now - lastTick) * 0.001f;
-    lastTick = now;
+    electricalRps = currentMechanicalRpm * pole_pairs / 60.0f;
+}
 
-    if (state == ALIGN) {
-      setOpenLoopSine(0.0f, ALIGN_MODULATION);
-
-      if ((now - stateStart) >= ALIGN_TIME_MS) {
-        state = RUN;
-        stateStart = now;
-        lastTick = now;
-      }
-    } else {
-      float t = (float)(now - stateStart) * 0.001f;
-      float hz = START_ELECTRICAL_HZ + (RAMP_HZ_PER_SEC * t);
-      hz = clampf(hz, START_ELECTRICAL_HZ, TARGET_ELECTRICAL_HZ);
-
-      angle += TWO_PI * hz * dt;
-      while (angle >= TWO_PI) angle -= TWO_PI;
-
-      setOpenLoopSine(angle, RUN_MODULATION);
+/* ================= ALIGN ROTOR ================= */
+static void alignRotor()
+{
+    for (int i = 0; i < 600; i++)
+    {
+        openLoopFOC(0.0f, startBoost);
+        delay(2);
     }
-  }
 }
 
-static void MX_GPIO_Init(void) {
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+/* ================= SETUP ================= */
+void setup()
+{
+    delay(1000);
 
-  GPIO_InitTypeDef gpio = {};
+    setupPWM();
 
-  gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
-  gpio.Mode = GPIO_MODE_AF_PP;
-  gpio.Pull = GPIO_PULLDOWN;
-  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  gpio.Alternate = GPIO_AF1_TIM1;
-  HAL_GPIO_Init(GPIOA, &gpio);
+    alignRotor();
 
-  gpio.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
-  gpio.Mode = GPIO_MODE_AF_PP;
-  gpio.Pull = GPIO_PULLDOWN;
-  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  gpio.Alternate = GPIO_AF1_TIM1;
-  HAL_GPIO_Init(GPIOB, &gpio);
+    electricalAngle = 0.0f;
 }
 
-static void MX_TIM1_Init(void) {
-  __HAL_RCC_TIM1_CLK_ENABLE();
+/* ================= LOOP ================= */
+void loop()
+{
+    static uint32_t last = micros();
 
-  htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
-  htim1.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
-  htim1.Init.Period = PWM_PERIOD;
-  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim1.Init.RepetitionCounter = 0;
-  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+    uint32_t now = micros();
+    float dt = (now - last) * 1e-6f;
+    last = now;
 
-  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK) Error_Handler();
+    if (dt <= 0.0f || dt > 0.05f)
+        dt = 0.001f;
 
-  TIM_OC_InitTypeDef oc = {};
-  oc.OCMode = TIM_OCMODE_PWM1;
-  oc.Pulse = (PWM_PERIOD + 1) / 2;
-  oc.OCPolarity = TIM_OCPOLARITY_HIGH;
-  oc.OCNPolarity = TIM_OCNPOLARITY_HIGH;
-  oc.OCFastMode = TIM_OCFAST_DISABLE;
-  oc.OCIdleState = TIM_OCIDLESTATE_RESET;
-  oc.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+    updateRamp(dt);
 
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &oc, TIM_CHANNEL_1) != HAL_OK) Error_Handler();
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &oc, TIM_CHANNEL_2) != HAL_OK) Error_Handler();
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &oc, TIM_CHANNEL_3) != HAL_OK) Error_Handler();
+    electricalAngle += 6.2831853f * electricalRps * dt;
 
-  TIM_BreakDeadTimeConfigTypeDef bd = {};
-  bd.OffStateRunMode = TIM_OSSR_DISABLE;
-  bd.OffStateIDLEMode = TIM_OSSI_ENABLE;
-  bd.LockLevel = TIM_LOCKLEVEL_OFF;
-  bd.DeadTime = DEADTIME_DTG;
-  bd.BreakState = TIM_BREAK_DISABLE;
-  bd.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
-  bd.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+    while (electricalAngle > 6.2831853f)
+        electricalAngle -= 6.2831853f;
 
-  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &bd) != HAL_OK) Error_Handler();
-}
+    float uq = (currentMechanicalRpm < 5.0f) ? startBoost : targetUqVolts;
 
-
-static void SystemClock_Config(void) {
-  RCC_OscInitTypeDef osc = {};
-  RCC_ClkInitTypeDef clk = {};
-
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-
-  osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  osc.HSIState = RCC_HSI_ON;
-  osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  osc.PLL.PLLState = RCC_PLL_ON;
-  osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  osc.PLL.PLLM = 16;
-  osc.PLL.PLLN = 336;
-  osc.PLL.PLLP = RCC_PLLP_DIV2;
-  osc.PLL.PLLQ = 7;
-
-  if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
-
-  clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                  RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-  clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  clk.APB1CLKDivider = RCC_HCLK_DIV4;
-  clk.APB2CLKDivider = RCC_HCLK_DIV2;
-
-  if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5) != HAL_OK) Error_Handler();
-}
-
-extern "C" void Error_Handler(void) {
-  __disable_irq();
-  if ((RCC->APB2ENR & RCC_APB2ENR_TIM1EN) != 0U) {
-    TIM1->BDTR &= ~TIM_BDTR_MOE;
-  }
-  while (1) {}
+    openLoopFOC(electricalAngle, uq);
 }

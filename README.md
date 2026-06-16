@@ -28,7 +28,7 @@ This repository is intended for controlled inverter testing, not finished produc
 | Runtime model | STM32duino FreeRTOS tasks |
 | PWM output | TIM1 center-aligned 6-PWM complementary outputs |
 | Switching frequency | `20 kHz` |
-| Dead-time | `360 ns` configured in TIM1 BDTR |
+| Dead-time | `1.5us` configured in TIM1 BDTR |
 | Control mode | Open-loop sinusoidal V/f style test waveform |
 | Monitoring | Serial output plus phase voltage ADC reads |
 | Hardware files | Schematic PDF, 3D STEP model, and firmware flow diagram |

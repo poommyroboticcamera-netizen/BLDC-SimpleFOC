@@ -13,10 +13,6 @@ TIM_HandleTypeDef htim1;
 // H2-6  HIN_C -> PA10 TIM1_CH3
 // H2-5  LIN_C -> PB15 TIM1_CH3N
 
-#define RUN_SWITCH_ENABLED 1
-#define RUN_SWITCH_PORT GPIOC
-#define RUN_SWITCH_PIN GPIO_PIN_13
-#define RUN_SWITCH_ACTIVE GPIO_PIN_RESET
 
 static constexpr uint32_t PWM_FREQ_HZ = 20000;
 static constexpr uint32_t TIM1_CLK_HZ = 168000000;
@@ -72,14 +68,6 @@ static void setOpenLoopSine(float theta, float modulation) {
   float dc = 0.5f + modulation * sinf(theta + PHASE_120);
 
   setDuty(da, db, dc);
-}
-
-static bool runSwitchActive(void) {
-#if RUN_SWITCH_ENABLED
-  return HAL_GPIO_ReadPin(RUN_SWITCH_PORT, RUN_SWITCH_PIN) == RUN_SWITCH_ACTIVE;
-#else
-  return true;
-#endif
 }
 
 static void preparePwmOutputs(void) {
@@ -217,26 +205,6 @@ static void MX_TIM1_Init(void) {
   if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &bd) != HAL_OK) Error_Handler();
 }
 
-static void MX_GPIO_Init(void) {
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  GPIO_InitTypeDef gpio = {};
-
-  gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
-  gpio.Mode = GPIO_MODE_AF_PP;
-  gpio.Pull = GPIO_PULLDOWN;
-  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  gpio.Alternate = GPIO_AF1_TIM1;
-  HAL_GPIO_Init(GPIOA, &gpio);
-
-  gpio.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
-  gpio.Mode = GPIO_MODE_AF_PP;
-  gpio.Pull = GPIO_PULLDOWN;
-  gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  gpio.Alternate = GPIO_AF1_TIM1;
-  HAL_GPIO_Init(GPIOB, &gpio);
-}
 
 static void SystemClock_Config(void) {
   RCC_OscInitTypeDef osc = {};

@@ -9,16 +9,16 @@ static const uint32_t TIMER_CLOCK_HZ = 168000000;
 static const uint8_t pole_pairs = 6;
 
 /* motor control */
-static float targetMechanicalRpm = 440.0f;
+static float targetMechanicalRpm = -300.0f;
 static float currentMechanicalRpm = 0.0f;
-static float rampRpmPerSecond = 120.0f;
+static float rampRpmPerSecond = 80.0f;
 
 static float electricalAngle = 0.0f;
 static float electricalRps = 0.0f;
 
 /* control */
-static float targetUqVolts = 4.2f;
-static float startBoost = 4.8f;
+static float targetUqVolts = 2.5f;
+static float startBoost = 2.8f;
 
 /* TIM */
 static uint16_t tim1Arr = 0;

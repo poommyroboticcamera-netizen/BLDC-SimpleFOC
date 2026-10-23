@@ -1,3 +1,7 @@
+**Language:** English · [ไทย](README_TH.md)
+
+This firmware project has no visual interface. Use the links above to switch the project documentation language.
+
 <div align="center">
 
 # BLDC SimpleFOC
@@ -28,11 +32,7 @@ This repository is intended for controlled inverter testing, not finished produc
 | Runtime model | STM32duino FreeRTOS tasks |
 | PWM output | TIM1 center-aligned 6-PWM complementary outputs |
 | Switching frequency | `20 kHz` |
-<<<<<<< HEAD
-| Dead-time | `1.5us` configured in TIM1 BDTR |
-=======
 | Dead-time | `1.5 us` configured in TIM1 BDTR |
->>>>>>> 4c121442047dd9c6b4e7016d9e61324d03763788
 | Control mode | Open-loop sinusoidal V/f style test waveform |
 | Monitoring | Serial output plus phase voltage ADC reads |
 | Hardware files | Schematic PDF, 3D STEP model, and firmware flow diagram |
